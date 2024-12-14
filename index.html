@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GLB Isometric Viewer</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        #app-container {
+            display: flex;
+            height: calc(100% - 120px); /* Adjust for drop area and info */
+        }
+        #drop-area {
+            border: 2px dashed #ccc;
+            border-radius: 20px;
+            width: calc(100% - 40px);
+            margin: 10px;
+            padding: 20px;
+            text-align: center;
+            transition: background-color 0.3s;
+        }
+        #drop-area.highlight {
+            background-color: #f0f0f0;
+        }
+        #canvas-container {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        canvas {
+            width: 100%;
+            height: 100%;
+            border: 2px dashed #ccc;
+        }
+        #sidebar {
+            width: 250px;
+            padding: 20px;
+            background-color: #f4f4f4;
+            border-left: 1px solid #ddd;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .input-group label {
+            font-weight: bold;
+        }
+        .input-group input {
+            padding: 5px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        #info {
+            text-align: center;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+<div id="drop-area">
+    Drag and Drop GLB File Here
+</div>
+<div id="app-container">
+    <div id="canvas-container">
+        <canvas id="canvas" style="width: 100%; height: 100%"></canvas>
+    </div>
+    <div id="sidebar">
+        <div class="input-group">
+            <label>Camera Rotation X (degrees)</label>
+            <input type="number" id="camera-x" min="-360" max="360" value="0" step="1">
+        </div>
+        <div class="input-group">
+            <label>Camera Rotation Y (degrees)</label>
+            <input type="number" id="camera-y" min="-360" max="360" value="0" step="1">
+        </div>
+        <div class="input-group">
+            <label>Camera Rotation Z (degrees)</label>
+            <input type="number" id="camera-z" min="-360" max="360" value="0" step="1">
+        </div>
+        <div class="input-group">
+            <label for="ambientIntensity">Ambient Light Intensity:</label>
+            <input type="range" id="ambientIntensity" min="0" max="10" step="0.1" value="1">
+        </div>
+        <div class="input-group">
+            <label for="directionalIntensity">Ambient Light Intensity:</label>
+            <input type="range" id="directionalIntensity" min="0" max="10" step="0.1" value="1">
+        </div>
+        <button id="apply-rotation">Apply Rotation</button>
+        <button id="reset-rotation">Reset Rotation</button>
+        <button id="export-button">Export</button>
+    </div>
+</div>
+<div id="info">No model loaded</div>
+
+<!-- Three.js and Loaders -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r126/three.min.js" integrity="sha512-n8IpKWzDnBOcBhRlHirMZOUvEq2bLRMuJGjuVqbzUJwtTsgwOgK5aS0c1JA647XWYfqvXve8k3PtZdzpipFjgg==" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/three@0.126.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/three@0.126.0/examples/js/controls/OrbitControls.js"></script>
+
+<script>
+  const dropArea = document.getElementById('drop-area');
+  const canvasContainer = document.getElementById('canvas-container');
+  const canvas = document.getElementById('canvas');
+  const infoDiv = document.getElementById('info');
+  const cameraXInput = document.getElementById('camera-x');
+  const cameraYInput = document.getElementById('camera-y');
+  const cameraZInput = document.getElementById('camera-z');
+  const applyRotationBtn = document.getElementById('apply-rotation');
+  const resetRotationBtn = document.getElementById('reset-rotation');
+  const exportBtn = document.getElementById('export-button');
+  const ambientIntensityInput = document.getElementById('ambientIntensity');
+  const directionalIntensityInput = document.getElementById('directionalIntensity');
+
+
+  let scene, camera, renderer, model, controls;
+  let initialCameraPosition;
+
+  // Prevent default drag behaviors
+  ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+    dropArea.addEventListener(eventName, preventDefaults, false);
+    document.body.addEventListener(eventName, preventDefaults, false);
+  });
+
+  // Highlight drop area when file is dragged over
+  ['dragenter', 'dragover'].forEach(eventName => {
+    dropArea.addEventListener(eventName, highlight, false);
+  });
+
+  ['dragleave', 'drop'].forEach(eventName => {
+    dropArea.addEventListener(eventName, unhighlight, false);
+  });
+
+  // Handle dropped files
+  dropArea.addEventListener('drop', handleDrop, false);
+  exportBtn.addEventListener('click', exportPNG);
+
+  function preventDefaults(e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
+  function highlight() {
+    dropArea.classList.add('highlight');
+  }
+
+  function unhighlight() {
+    dropArea.classList.remove('highlight');
+  }
+
+  function handleDrop(e) {
+    const dt = e.dataTransfer;
+    const files = dt.files;
+    handleFiles(files);
+  }
+
+  function handleFiles(files) {
+    if (files.length === 0) return;
+
+    const file = files[0];
+
+    // Ensure it's a GLB file
+    if (!file.name.toLowerCase().endsWith('.glb')) {
+      alert('Please drop a GLB file');
+      return;
+    }
+
+    // Initialize scene if not already done
+    if (!scene) {
+      scene = new THREE.Scene();
+      // scene.background = new THREE.Color(0xffffff);
+      scene.background = null;
+
+      // Orthographic camera for isometric view
+      const aspectRatio = window.innerWidth / window.innerHeight;
+      const viewSize = 10;
+      camera = new THREE.OrthographicCamera(
+        -viewSize * aspectRatio,
+        viewSize * aspectRatio,
+        viewSize,
+        -viewSize,
+        0.1,
+        1000
+      );
+
+      // Isometric camera positioning
+      camera.position.set(10, 10, 10);
+      initialCameraPosition = camera.position.clone();
+      camera.lookAt(0, 0, 0);
+
+      // Lighting
+      const ambientLight = new THREE.AmbientLight(0xffffff, 1);
+      scene.add(ambientLight);
+
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(5, 5, 5);
+      scene.add(directionalLight);
+
+      // Renderer
+      renderer = new THREE.WebGLRenderer({ antialias: true, canvas: canvas, alpha: true });
+      renderer.setSize(500, 500);
+      renderer.setClearColor(0xffffff, 0); // Transparent background
+      camera.aspect = 1;
+      canvasContainer.innerHTML = ''; // Clear previous canvas
+      canvasContainer.appendChild(renderer.domElement);
+
+      // Orbit Controls
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.25;
+      controls.screenSpacePanning = false;
+      controls.maxPolarAngle = Math.PI / 2;
+      ambientIntensityInput.addEventListener('input', (event) => {
+        ambientLight.intensity = parseFloat(event.target.value);
+      });
+      directionalIntensityInput.addEventListener('input', (event) => {
+        directionalLight.intensity = parseFloat(event.target.value);
+      });
+
+      // Window resize handler
+      window.addEventListener('resize', onWindowResize, false);
+
+      // Rotation controls
+      applyRotationBtn.addEventListener('click', applyCameraRotation);
+      resetRotationBtn.addEventListener('click', resetCameraRotation);
+    }
+
+    // Clear previous model
+    if (model) {
+      scene.remove(model);
+    }
+
+    // Load GLB file
+    const reader = new FileReader();
+    reader.onload = function(event) {
+      const loader = new THREE.GLTFLoader();
+
+      loader.load(
+        event.target.result,
+        (gltf) => {
+          model = gltf.scene;
+
+          // Normalize the model
+          const box = new THREE.Box3().setFromObject(model);
+          const center = box.getCenter(new THREE.Vector3());
+          model.position.sub(center);
+
+          // Scale model to fit view
+          const size = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z);
+          const scale = 5 / maxDim;
+          model.scale.set(scale, scale, scale);
+
+          scene.add(model);
+          infoDiv.textContent = `Loaded: ${file.name}`;
+          onWindowResize();
+          animate();
+        },
+        (xhr) => {
+          console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+        },
+        (error) => {
+          console.error('An error happened', error);
+          infoDiv.textContent = 'Error loading model: ' + error.message;
+        }
+      );
+    };
+
+    // Read the file as a data URL
+    reader.readAsDataURL(file);
+  }
+
+  function applyCameraRotation() {
+    if (!camera) return;
+
+    const x = parseFloat(cameraXInput.value) * Math.PI / 180;
+    const y = parseFloat(cameraYInput.value) * Math.PI / 180;
+    const z = parseFloat(cameraZInput.value) * Math.PI / 180;
+
+    // Create rotation matrix
+    const rotationMatrix = new THREE.Matrix4();
+    rotationMatrix.makeRotationFromEuler(new THREE.Euler(x, y, z, 'XYZ'));
+
+    // Apply rotation to initial camera position
+    const newPosition = initialCameraPosition.clone().applyMatrix4(rotationMatrix);
+    camera.position.copy(newPosition);
+    camera.lookAt(0, 0, 0);
+  }
+
+  function resetCameraRotation() {
+    if (!camera) return;
+
+    // Reset inputs
+    cameraXInput.value = 0;
+    cameraYInput.value = 0;
+    cameraZInput.value = 0;
+
+    // Reset camera to initial position
+    camera.position.copy(initialCameraPosition);
+    camera.lookAt(0, 0, 0);
+  }
+
+  function onWindowResize() {
+    const size = Math.min(canvasContainer.parentElement.offsetWidth, canvasContainer.parentElement.offsetHeight);
+    const aspectRatio = 1;
+    const viewSize = 10;
+
+    camera.left = -viewSize * aspectRatio;
+    camera.right = viewSize * aspectRatio;
+    camera.top = viewSize;
+    camera.bottom = -viewSize;
+
+    camera.updateProjectionMatrix();
+    renderer.setSize(size, size);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    // Update controls
+    controls.update();
+
+    renderer.render(scene, camera);
+  }
+
+  function exportPNG() {
+    // Render the current frame
+    renderer.render(scene, camera);
+
+    // Get the data URL of the current frame
+    const dataURL = renderer.domElement.toDataURL('image/png');
+
+    // Create a temporary download link
+    const link = document.createElement('a');
+    link.download = 'export.png';
+    link.href = dataURL;
+    link.click();
+  }
+
+</script>
+</body>
+</html>
